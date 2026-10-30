@@ -43,7 +43,9 @@ pydantic==2.14.2
 pydantic-extra-types==2.11.1
 pydantic-settings==2.16.2
 pydantic_core==2.50.2
+pwdlib[argon2]
 Pygments==2.21.0
+python-jose[cryptography]
 python-dotenv==1.2.4
 python-multipart==0.0.32
 PyYAML==6.0.3

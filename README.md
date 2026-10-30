@@ -1,293 +1,361 @@
-# Real-Time Geo-Aware Dispatch & Service Marketplace
+# Real-Time Dispatch & Service Marketplace
 
-A backend-first dispatch engine that matches service providers (drivers, delivery agents) to nearby requests based on location, availability and capacity, in the style of Uber or DoorDash.
+A real-time platform that matches passengers (requestors) with nearby available drivers based on location, availability and capacity. Built to learn WebSockets, webhooks, geospatial queries and concurrency control.
 
-> **Status:** Week 1 of 5, geospatial foundation.
-> **Goal of Week 1:** A working API that stores provider locations in PostGIS and returns the nearest available providers quickly, with proof (benchmarks) that it is fast.
-
----
-
-## 1. Project Roadmap
-
-| Week | Focus | Key Learning |
-|------|-------|--------------|
-| **1** | PostGIS schema, location update API, proximity queries | Geospatial data, spatial indexes (GiST) |
-| 2 | WebSocket layer, live driver position streaming, matching logic | WebSockets, connection management |
-| 3 | React dashboard with a live map | Frontend state, Leaflet/Mapbox, WebSocket client |
-| 4 | Concurrency control (locking), Redis cache and Redis GEO | Race conditions, transactions, caching |
-| 5 | Load testing, CI/CD, deployment, query optimization | Measuring, profiling, DevOps |
-
-This README covers **Week 1 requirements** in detail. Later weeks are summarized only.
+> Status: in development (3-week build). Update the checkboxes at the bottom as you go.
 
 ---
 
-## 2. Week 1 Scope
+## 1. Scope
 
-### In scope
-- Project setup with Docker Compose (FastAPI app and PostGIS database)
-- Database schema using the PostGIS `geography` type
-- Database migrations with Alembic
-- REST API for providers and location updates
-- Proximity ("nearby providers") query using `ST_DWithin` and `ST_Distance`
-- A GiST spatial index, with measured before/after query times
-- A seed script that generates 50,000 random providers
-- Automated tests for the main endpoints
-- A short written summary of benchmark results
+### In scope (MVP)
+- Register / login with a role: `passenger` or `driver`
+- Drivers go online/offline and stream their location
+- Passengers create a ride request (pickup + dropoff)
+- Server finds nearby available drivers (PostGIS) and offers the request
+- A driver accepts; the request can never be accepted twice (no double-booking)
+- Live map dashboard (React + Leaflet) showing drivers and requests
+- Outbound webhooks fired on request status changes
+- Redis for caching and pub/sub
+- Docker Compose for local development
+- Basic load test (Locust or k6)
 
-### Out of scope for Week 1
-- WebSockets (Week 2)
-- Matching and assignment logic (Weeks 2 and 4)
-- Frontend (Week 3)
-- Redis, locking, Kubernetes (Weeks 4 and 5)
-
----
-
-## 3. Tech Stack (Week 1)
-
-| Layer | Choice |
-|-------|--------|
-| Language | Python 3.12+ |
-| API framework | FastAPI, Pydantic v2 |
-| Database | PostgreSQL 16 with PostGIS 3 (`postgis/postgis` Docker image) |
-| ORM / Geo | SQLAlchemy 2.0 and GeoAlchemy2 |
-| Migrations | Alembic |
-| Testing | pytest, httpx |
-| Tooling | Docker, Docker Compose, Ruff (lint/format) |
+### Out of scope (do not attempt)
+- Payments, ratings, surge pricing
+- Turn-by-turn routing / ETA (use straight-line distance)
+- Native mobile apps
+- Kubernetes (stretch goal only)
+- Multi-region deployment
 
 ---
 
-## 4. Functional Requirements
+## 2. Tech Stack
 
-### FR-1: Provider management
-- Create a provider with a name, initial location, capacity and status.
-- Fetch a provider by ID.
-- Update a provider's status: `available`, `busy` or `offline`.
-
-### FR-2: Location updates
-- A provider can send its latest location (`lat`, `lng`).
-- The system stores only the **current** location on the provider row and updates `last_seen_at`.
-- Invalid coordinates are rejected with a `422` error.
-  - Latitude must be between -90 and 90.
-  - Longitude must be between -180 and 180.
-
-### FR-3: Nearby provider search
-- Given a point (`lat`, `lng`) and a `radius_km`, return providers within that radius.
-- Only return providers with status `available` and spare capacity (`current_load < capacity`).
-- Results are sorted by distance, nearest first.
-- Support a `limit` parameter (default 10, max 50).
-- Each result includes the distance in meters.
-
-### FR-4: Health check
-- `GET /health` confirms the API is running and can reach the database.
+| Layer | Tool |
+|---|---|
+| API | FastAPI + Uvicorn |
+| DB | PostgreSQL 16 + PostGIS 3 |
+| ORM / migrations | SQLAlchemy 2.0 (async) + GeoAlchemy2 + Alembic |
+| Cache / pub-sub | Redis 7 |
+| Real-time | FastAPI native WebSockets |
+| Frontend | React + Vite + Leaflet (react-leaflet) |
+| Auth | JWT (access tokens) |
+| Infra | Docker, Docker Compose |
+| Testing | pytest, pytest-asyncio, httpx, Locust/k6 |
 
 ---
 
-## 5. API Specification
+## 3. Prerequisites
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Service and database health |
-| `POST` | `/providers` | Create a provider |
-| `GET` | `/providers/{id}` | Get a provider |
-| `PATCH` | `/providers/{id}/status` | Change status |
-| `PUT` | `/providers/{id}/location` | Update current location |
-| `GET` | `/providers/nearby` | Find nearby available providers |
+- Python 3.11+
+- Node.js 20+
+- Docker Desktop (runs Postgres+PostGIS and Redis)
+- Git
 
-### Example: create a provider
-```http
-POST /providers
-{
-  "name": "Kwame",
-  "lat": 6.6885,
-  "lng": -1.6244,
-  "capacity": 3
-}
+> PostGIS is NOT installed with pip. It is a PostgreSQL extension that lives on the database server. Use the `postgis/postgis` Docker image, then run `CREATE EXTENSION postgis;`.
+
+---
+
+## 4. Setup
+
+### 4.1 Start Postgres (PostGIS) and Redis
+
+`docker-compose.yml`:
+
+```yaml
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: dispatch
+      POSTGRES_PASSWORD: dispatch
+      POSTGRES_DB: dispatch
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+volumes:
+  pgdata:
 ```
 
-### Example: nearby search
-```http
-GET /providers/nearby?lat=6.6885&lng=-1.6244&radius_km=3&limit=10
+```bash
+docker compose up -d
 ```
 
-Response:
-```json
-[
-  { "id": "…", "name": "Kwame", "distance_m": 412.7, "lat": 6.6912, "lng": -1.6231 }
-]
+### 4.2 Backend
+
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+alembic upgrade head
+uvicorn app.main:app --reload
+```
+
+`requirements.txt`:
+
+```
+fastapi
+uvicorn[standard]        # includes websockets support
+sqlalchemy[asyncio]>=2.0
+asyncpg
+geoalchemy2
+alembic
+pydantic-settings
+redis
+pyjwt
+bcrypt
+httpx
+python-multipart
+pytest
+pytest-asyncio
+locust
+```
+
+### 4.3 Environment variables (`backend/.env`)
+
+```
+DATABASE_URL=postgresql+asyncpg://dispatch:dispatch@localhost:5432/dispatch
+REDIS_URL=redis://localhost:6379/0
+JWT_SECRET=change-me
+JWT_EXPIRE_MINUTES=60
+MATCH_RADIUS_KM=5
+OFFER_TIMEOUT_SECONDS=15
+WEBHOOK_SIGNING_SECRET=change-me-too
+```
+
+### 4.4 Frontend
+
+```bash
+cd frontend
+npm create vite@latest . -- --template react
+npm install react-leaflet leaflet axios
+npm run dev
 ```
 
 ---
 
-## 6. Database Design
+## 5. Database Schema
 
-### Table: `providers`
+First migration must run: `CREATE EXTENSION IF NOT EXISTS postgis;`
 
+Use `geography(Point, 4326)` so distances are in meters and `ST_DWithin` takes meters.
+
+### users
 | Column | Type | Notes |
-|--------|------|-------|
-| `id` | UUID, primary key | |
-| `name` | text, not null | |
-| `status` | enum (`available`, `busy`, `offline`) | default `offline` |
-| `capacity` | integer, not null | max concurrent jobs, must be ≥ 1 |
-| `current_load` | integer, not null | default 0, must be ≤ `capacity` |
-| `location` | `geography(Point, 4326)` | **GiST index required** |
-| `last_seen_at` | timestamptz | updated on each location update |
-| `version` | integer | default 0, reserved for optimistic locking in Week 4 |
-| `created_at` / `updated_at` | timestamptz | |
+|---|---|---|
+| id | UUID PK | |
+| email | text UNIQUE NOT NULL | |
+| password_hash | text NOT NULL | |
+| full_name | text NOT NULL | |
+| phone | text | |
+| role | enum(`passenger`,`driver`) NOT NULL | |
+| is_active | bool default true | |
+| created_at | timestamptz | |
 
-### Table: `service_requests` (schema only in Week 1)
-
+### driver_profiles (1:1 with users where role = driver)
 | Column | Type | Notes |
-|--------|------|-------|
-| `id` | UUID, primary key | |
-| `location` | `geography(Point, 4326)` | pickup location |
-| `status` | enum (`pending`, `assigned`, `completed`, `cancelled`) | |
-| `assigned_provider_id` | UUID, nullable, FK to `providers` | |
-| `created_at` | timestamptz | |
+|---|---|---|
+| user_id | UUID PK, FK users.id | |
+| vehicle_type | text | e.g. car, bike |
+| plate_number | text | |
+| capacity | int default 1 | max concurrent jobs / seats |
+| status | enum(`offline`,`available`,`busy`) | default offline |
+| current_location | geography(Point,4326) | nullable until first update |
+| location_updated_at | timestamptz | |
+| version | int default 0 | optimistic locking |
 
-### Required indexes
-- GiST index on `providers.location`
-- B-tree index on `providers.status`
+Indexes:
+- `GIST (current_location)`
+- partial index on `status = 'available'`
 
-### Core query pattern
+### ride_requests
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID PK | |
+| passenger_id | UUID FK users.id | |
+| driver_id | UUID FK users.id, nullable | set on accept |
+| pickup_location | geography(Point,4326) | |
+| dropoff_location | geography(Point,4326) | |
+| status | enum(`pending`,`offered`,`accepted`,`in_progress`,`completed`,`cancelled`,`expired`) | |
+| requested_at | timestamptz | |
+| accepted_at | timestamptz | |
+| completed_at | timestamptz | |
+| version | int default 0 | optimistic locking |
+
+Indexes: `GIST (pickup_location)`, `(status)`, `(passenger_id)`, `(driver_id)`.
+
+Constraint (prevents double-booking at the DB level):
 ```sql
-SELECT id, name,
-       ST_Distance(location, ST_MakePoint(:lng, :lat)::geography) AS distance_m
-FROM providers
+CREATE UNIQUE INDEX one_active_job_per_driver
+ON ride_requests (driver_id)
+WHERE status IN ('accepted','in_progress');
+```
+
+### ride_offers (who was offered which request)
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID PK | |
+| request_id | UUID FK | |
+| driver_id | UUID FK | |
+| status | enum(`sent`,`accepted`,`rejected`,`expired`) | |
+| sent_at / responded_at | timestamptz | |
+
+### driver_location_history (optional, good for load testing)
+| Column | Type |
+|---|---|
+| id | bigserial PK |
+| driver_id | UUID FK |
+| location | geography(Point,4326) |
+| recorded_at | timestamptz |
+
+### webhook_endpoints
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID PK | |
+| owner_id | UUID FK users.id | |
+| url | text | |
+| secret | text | used for HMAC signature |
+| events | text[] | e.g. `{request.accepted,request.completed}` |
+| is_active | bool | |
+
+### webhook_deliveries
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID PK | |
+| endpoint_id | UUID FK | |
+| event_type | text | |
+| payload | jsonb | |
+| status | enum(`pending`,`delivered`,`failed`) | |
+| attempts | int | |
+| next_attempt_at | timestamptz | retry with backoff |
+| last_response_code | int | |
+
+---
+
+## 6. Key Queries
+
+Nearby available drivers (5 km radius, nearest first):
+
+```sql
+SELECT user_id,
+       ST_Distance(current_location, :pickup) AS meters
+FROM driver_profiles
 WHERE status = 'available'
-  AND current_load < capacity
-  AND ST_DWithin(location, ST_MakePoint(:lng, :lat)::geography, :radius_m)
-ORDER BY distance_m
-LIMIT :limit;
+  AND ST_DWithin(current_location, :pickup, :radius_m)
+ORDER BY current_location <-> :pickup
+LIMIT 10;
 ```
 
-Note that PostGIS uses **(longitude, latitude)** order, not (lat, lng). Mixing these up is the most common geospatial bug.
+Accept a request safely (no race conditions):
 
----
-
-## 7. Non-Functional Requirements
-
-- **Performance target:** Nearby search on 50,000 providers should be fast enough to be a hot-path query. Record your actual p50 and p95 numbers. Do not assume a target; measure it.
-- **Validation:** All input validated with Pydantic models.
-- **Configuration:** Secrets and DB URLs come from environment variables (`.env`), never hard-coded.
-- **Reproducibility:** `docker compose up` must bring up the entire system from a fresh clone.
-- **Code quality:** Ruff passes with no errors; endpoints have type hints.
-
----
-
-## 8. Suggested Project Structure
-
-```
-.
-├── app/
-│   ├── main.py
-│   ├── config.py
-│   ├── database.py
-│   ├── models/
-│   ├── schemas/
-│   ├── routers/
-│   └── services/
-├── alembic/
-├── scripts/
-│   └── seed_providers.py
-├── tests/
-├── docker-compose.yml
-├── Dockerfile
-├── requirements.txt
-├── .env.example
-└── README.md
+```sql
+BEGIN;
+SELECT * FROM ride_requests
+WHERE id = :id AND status IN ('pending','offered')
+FOR UPDATE SKIP LOCKED;
+-- if no row returned: someone else got it -> return 409
+UPDATE ride_requests SET status='accepted', driver_id=:driver, accepted_at=now()
+WHERE id=:id;
+UPDATE driver_profiles SET status='busy', version=version+1 WHERE user_id=:driver;
+COMMIT;
 ```
 
 ---
 
-## 9. Week 1 Task Checklist
+## 7. API Endpoints (planned)
 
-### Setup
-- [ ] Create the GitHub repository and this README
-- [ ] Write `docker-compose.yml` with the `postgis/postgis` image and the API service
-- [ ] Confirm PostGIS works: `CREATE EXTENSION postgis; SELECT PostGIS_Version();`
-- [ ] Add `/health` endpoint
+| Method | Path | Who | Purpose |
+|---|---|---|---|
+| POST | /auth/register | public | create user with role |
+| POST | /auth/login | public | get JWT |
+| GET | /me | any | current user |
+| POST | /drivers/me/status | driver | go online/offline |
+| POST | /drivers/me/location | driver | update position |
+| GET | /drivers/nearby?lat&lng&radius_km | any | proximity query |
+| POST | /requests | passenger | create ride request |
+| GET | /requests/{id} | owner | status |
+| POST | /requests/{id}/accept | driver | accept (locked) |
+| POST | /requests/{id}/start | driver | begin trip |
+| POST | /requests/{id}/complete | driver | finish trip |
+| POST | /requests/{id}/cancel | passenger | cancel |
+| POST | /webhooks | any | register endpoint |
+| GET | /webhooks/deliveries | owner | delivery log |
 
-### Database
-- [ ] Define models with SQLAlchemy and GeoAlchemy2
-- [ ] Create the first Alembic migration (including the PostGIS extension and the GiST index)
-- [ ] Add a `CHECK` constraint so `current_load <= capacity`
+## 8. WebSocket Protocol (planned)
 
-### API
-- [ ] `POST /providers` and `GET /providers/{id}`
-- [ ] `PUT /providers/{id}/location`
-- [ ] `PATCH /providers/{id}/status`
-- [ ] `GET /providers/nearby`
+Connect: `ws://localhost:8000/ws?token=<JWT>`
 
-### Data and benchmarking
-- [ ] Write `seed_providers.py` to insert 50,000 providers around a city
-- [ ] Run `EXPLAIN ANALYZE` on the nearby query **without** the GiST index
-- [ ] Add the index, run again, and save both outputs in `docs/benchmarks.md`
-- [ ] Compare results using different radii (1 km, 5 km, 20 km)
+Server -> client messages:
+```json
+{"type":"driver.location","driver_id":"...","lat":0,"lng":0}
+{"type":"request.offer","request_id":"...","pickup":{"lat":0,"lng":0}}
+{"type":"request.status","request_id":"...","status":"accepted"}
+```
+Client -> server:
+```json
+{"type":"location.update","lat":0,"lng":0}
+{"type":"offer.respond","request_id":"...","accept":true}
+```
 
-### Testing
-- [ ] Test provider creation and validation errors
-- [ ] Test that location updates change the nearby results
-- [ ] Test that `offline` and full-capacity providers are excluded
-- [ ] Test that results are sorted by distance
+Scaling note: each backend node only holds its own sockets. Publish events to Redis pub/sub so every node can forward them to its connected clients.
 
----
+## 9. Webhooks (what to learn)
 
-## 10. Definition of Done (Week 1)
-
-Week 1 is complete when all of these are true:
-
-1. `docker compose up` starts the API and database from scratch.
-2. All endpoints in section 5 work and are covered by passing tests.
-3. 50,000 providers can be seeded with one command.
-4. `docs/benchmarks.md` shows query plans and timings before and after the spatial index.
-5. You can explain, in your own words, why `ST_DWithin` with a GiST index is faster than computing distances for every row.
-
----
-
-## 11. Learning Notes for Upcoming Weeks
-
-You are learning WebSockets and webhooks through this project. Here is where they fit.
-
-### WebSockets (Week 2)
-Before starting Week 2, understand:
-- How a WebSocket differs from a normal HTTP request (persistent, two-way connection)
-- FastAPI's `WebSocket` class: `accept()`, `receive_json()`, `send_json()`
-- A **connection manager** pattern: tracking which clients are connected and broadcasting to them
-- Handling disconnects cleanly (`WebSocketDisconnect`)
-- Why scaling to several backend servers breaks in-memory connection tracking, and how Redis Pub/Sub solves it (Week 4)
-
-### Webhooks (optional extension)
-Webhooks are not naturally part of the matching engine, but you can add them as an extension: when a request's status changes (for example `assigned` or `completed`), the system sends an HTTP `POST` to a URL the customer registered. Learn:
-- What a webhook is (your server calls someone else's URL when an event happens)
-- Signing payloads with HMAC so receivers can verify them
-- Retries with backoff when the receiver is down
-- Idempotency, so retries don't cause duplicate actions
-
-### Concurrency (Week 4)
-Study ahead:
-- What a race condition is, with a "two requests, one provider" example
-- Database transactions and isolation levels
-- Pessimistic locking (`SELECT … FOR UPDATE`) versus optimistic locking (the `version` column)
+- Outbound: when a request changes status, POST JSON to every registered URL
+- Sign the body with HMAC-SHA256 using the endpoint secret, send in `X-Signature`
+- Retry failures with exponential backoff, log every attempt in `webhook_deliveries`
+- Test with https://webhook.site or a tiny local receiver endpoint
 
 ---
 
-## 12. Recommended Resources
+## 10. Suggested Folder Structure
 
-- PostGIS documentation: `ST_DWithin`, `ST_Distance`, geography vs geometry
-- GeoAlchemy2 documentation
-- FastAPI documentation: WebSockets, testing, dependencies
-- PostgreSQL documentation: `EXPLAIN`, indexes, transaction isolation
-- Locust or k6 documentation (for Week 5)
+```
+backend/
+  app/
+    main.py
+    core/        (config, security, db)
+    models/      (SQLAlchemy models)
+    schemas/     (Pydantic)
+    routers/     (auth, drivers, requests, webhooks, ws)
+    services/    (matching, webhook_dispatcher, redis_pubsub)
+  alembic/
+  tests/
+frontend/
+  src/
+docker-compose.yml
+README.md
+```
 
 ---
 
-## 13. Results (fill in as you build)
+## 11. Build Checklist (3 weeks)
 
-| Metric | Without index | With GiST index |
-|--------|---------------|-----------------|
-| Rows in table | 50,000 | 50,000 |
-| Nearby query (1 km), p50 | _TBD_ | _TBD_ |
-| Nearby query (5 km), p50 | _TBD_ | _TBD_ |
-| Nearby query (20 km), p50 | _TBD_ | _TBD_ |
+**Week 1 - Foundation**
+- [ ] Docker Compose (PostGIS + Redis)
+- [ ] Models + Alembic migration + GiST indexes
+- [ ] Register/login with roles + JWT + role guards
+- [ ] Driver location update + nearby query endpoint
+- [ ] Create/accept request with row locking
 
-Only record numbers you measured yourself.
+**Week 2 - Real-time**
+- [ ] WebSocket manager (auth, connect/disconnect)
+- [ ] Driver location streaming + offers + status events
+- [ ] Redis pub/sub bridge between nodes
+- [ ] Outbound webhooks with signature + retries
+
+**Week 3 - UI, proof, ship**
+- [ ] React + Leaflet live map
+- [ ] Request/accept UI for both roles
+- [ ] Concurrency test (many drivers accept same request, exactly one wins)
+- [ ] Load test + measured numbers
+- [ ] Deploy (single VM or Render/Fly) + short demo GIF
+
+## 12. Metrics to Measure (before putting them on a resume)
+
+- p50/p95 latency of `/drivers/nearby` with N seeded drivers
+- Double-allocations under concurrent accept test (target: 0)
+- WebSocket connections held per node

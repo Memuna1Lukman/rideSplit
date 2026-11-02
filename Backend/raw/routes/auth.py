@@ -2,13 +2,14 @@ from fastapi import HTTPException,Depends,status,APIRouter,Response
 from .. import models,utils,schemas,oauth
 from ..database import get_db
 from sqlalchemy.orm import Session
-from fastapi.security.oauth2 import OAuth2PasswordRequestForm
-from ..config import settings
 
-router = APIRouter(
-    tags= ["Authentication"],
-    prefix="/auth"
-)
+from .. import models, oauth, utils
+from ..config import settings
+from ..database import get_db
+
+
+router = APIRouter(prefix="/auth", tags=["Authentication"])
+
 
 @router.post("/login")
 def login_user(
@@ -27,14 +28,14 @@ def login_user(
     # reponse in the cookie form
     response.set_cookie(
         key="access_token",
-        value = f"Bearer {access_token}",
-        httponly= True,
-        secure = False,
+        value=f"Bearer {access_token}",
+        httponly=True,
+        secure=False,  # Set this to True when the application is served over HTTPS.
         samesite="lax",
-        max_age=settings.access_token_expire_minutes*60
+        max_age=settings.access_token_expire_minutes * 60,
     )
+    return {"message": "Login successful"}
 
-    return {"message": "Login successful"}   
 
 
 

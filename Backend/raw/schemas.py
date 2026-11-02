@@ -5,6 +5,10 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from .models import Role
 
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+
+from .models import DriverStatus, Role
+
 
 class TokenData(BaseModel):
     id: Optional[int] = None

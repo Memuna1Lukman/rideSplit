@@ -85,7 +85,7 @@ class DriverProfile(Base):
     # user_id is both the primary key and the foreign key (1:1 with users)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     vehicle_type = Column(String, nullable=False)
-    plate_number = Column(String, nullable=False)
+    plate_number = Column(String, nullable=False, unique=True)
     capacity = Column(Integer, nullable=False, default=1)
     status = Column(
         pg_enum(DriverStatus, "driver_status"),

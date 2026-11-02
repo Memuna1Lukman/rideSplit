@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Response, status
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi import HTTPException,Depends,status,APIRouter,Response
+from .. import models,utils,schemas,oauth
+from ..database import get_db
 from sqlalchemy.orm import Session
 
 from .. import models, oauth, utils
@@ -12,15 +13,19 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/login")
 def login_user(
-    response: Response,
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db),
-):
-    user = db.query(models.User).filter(models.User.email == form_data.username).first()
-    if user is None or not utils.verify_password(form_data.password, user.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    response:Response,
+    user:OAuth2PasswordRequestForm=Depends(),db:Session = Depends(get_db)):
+    check_user = db.query(models.User).filter(models.User.email == user.username).first()
+    if not check_user:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,detail=f"Invalid Credentials")
 
-    access_token = oauth.create_token({"owner_id": user.id})
+    verify_password = utils.verify_password(user.password,check_user.password_hash)
+    if not verify_password:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,detail=f"Invalid Credentials")
+
+    
+    access_token = oauth.create_token(data={"owner_id": check_user.id})
+    # reponse in the cookie form
     response.set_cookie(
         key="access_token",
         value=f"Bearer {access_token}",
@@ -32,7 +37,19 @@ def login_user(
     return {"message": "Login successful"}
 
 
+
+
 @router.post("/logout")
-def logout_user(response: Response):
-    response.delete_cookie(key="access_token", httponly=True, samesite="lax")
+def logout_user (
+    response:Response
+):
+    response.set_cookie(
+        key="access_token",
+        value = "",
+        httponly= True,
+        secure = False,
+        samesite="lax",
+        max_age=0
+        )
+    
     return {"message": "Logout successful"}

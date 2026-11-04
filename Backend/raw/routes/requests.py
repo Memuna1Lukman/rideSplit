@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.shape import to_shape
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -40,6 +40,7 @@ def serialize_ride_request(ride_request: models.RideRequest) -> schemas.RideRequ
 @router.post("/", response_model=schemas.RideRequestOut, status_code=status.HTTP_201_CREATED)
 def create_ride_request(
     request_data: schemas.RideRequestCreate,
+    idempotency_key: str = Header(..., min_length=1, max_length=255),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(oauth.get_current_user),
 ):
@@ -50,8 +51,20 @@ def create_ride_request(
             detail="Only passenger accounts can create ride requests",
         )
 
+    existing_request = (
+        db.query(models.RideRequest)
+        .filter(
+            models.RideRequest.passenger_id == current_user.id,
+            models.RideRequest.idempotency_key == idempotency_key,
+        )
+        .first()
+    )
+    if existing_request is not None:
+        return serialize_ride_request(existing_request)
+
     ride_request = models.RideRequest(
         passenger_id=current_user.id,
+        idempotency_key=idempotency_key,
         pickup_location=location_to_point(request_data.pickup),
         dropoff_location=location_to_point(request_data.dropoff),
         status=models.RequestStatus.pending,
@@ -59,14 +72,55 @@ def create_ride_request(
     db.add(ride_request)
 
     try:
+        # Flush assigns the primary key before the commit expires ORM attributes,
+        # allowing a successful commit to be returned even if refresh fails.
+        db.flush()
+        response = schemas.RideRequestOut(
+            id=ride_request.id,
+            passenger_id=ride_request.passenger_id,
+            driver_id=ride_request.driver_id,
+            pickup=schemas.LocationOut(
+                latitude=request_data.pickup.latitude,
+                longitude=request_data.pickup.longitude,
+            ),
+            dropoff=schemas.LocationOut(
+                latitude=request_data.dropoff.latitude,
+                longitude=request_data.dropoff.longitude,
+            ),
+            status=ride_request.status,
+            requested_at=ride_request.requested_at,
+            accepted_at=ride_request.accepted_at,
+            completed_at=ride_request.completed_at,
+        )
         db.commit()
-        db.refresh(ride_request)
+    except IntegrityError as exc:
+        db.rollback()
+        # A concurrent retry may have committed the same key after the lookup.
+        existing_request = (
+            db.query(models.RideRequest)
+            .filter(
+                models.RideRequest.passenger_id == current_user.id,
+                models.RideRequest.idempotency_key == idempotency_key,
+            )
+            .first()
+        )
+        if existing_request is not None:
+            return serialize_ride_request(existing_request)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to create the ride request",
+        ) from exc
     except SQLAlchemyError as exc:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to create the ride request",
         ) from exc
+
+    try:
+        db.refresh(ride_request)
+    except SQLAlchemyError:
+        return response
 
     return serialize_ride_request(ride_request)
 
@@ -165,4 +219,3 @@ def accept_ride_request(
         ) from exc
 
     return serialize_ride_request(ride_request)
-

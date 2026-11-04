@@ -116,6 +116,7 @@ class RideRequest(Base):
     id = Column(Integer, primary_key=True)
     passenger_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     driver_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)  # empty until accepted
+    idempotency_key = Column(String(255), nullable=True)
     pickup_location = Column(
         Geography(geometry_type="POINT", srid=4326, spatial_index=True), nullable=False
     )
@@ -139,6 +140,11 @@ class RideRequest(Base):
 
     __mapper_args__ = {"version_id_col": version}
     __table_args__ = (
+        UniqueConstraint(
+            "passenger_id",
+            "idempotency_key",
+            name="uq_ride_requests_passenger_idempotency_key",
+        ),
         # DB-level guard: a driver can never hold two active jobs
         Index(
             "one_active_job_per_driver",

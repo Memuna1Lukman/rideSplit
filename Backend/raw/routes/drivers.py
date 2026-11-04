@@ -82,6 +82,22 @@ def update_driver_status(
     current_user: models.User = Depends(oauth.get_current_driver),
 ):
     profile = current_user.driver_profile
+    if status_data.status == models.DriverStatus.available:
+        active_job = (
+            db.query(models.RideRequest)
+            .filter(
+                models.RideRequest.driver_id == current_user.id,
+                models.RideRequest.status.in_(
+                    [models.RequestStatus.accepted, models.RequestStatus.in_progress]
+                ),
+            )
+            .first()
+        )
+        if active_job is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Driver cannot be available while a ride is active",
+            )
     profile.status = status_data.status
     try:
         db.commit()

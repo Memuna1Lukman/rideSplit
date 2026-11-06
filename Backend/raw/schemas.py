@@ -3,7 +3,7 @@ from typing import Optional
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from .models import DriverStatus, RequestStatus, Role
+from .models import DriverStatus, PaymentStatus, RequestStatus, Role
 
 
 class TokenData(BaseModel):
@@ -105,6 +105,16 @@ class RideRequestOut(BaseModel):
     requested_at: Optional[datetime]
     accepted_at: Optional[datetime]
     completed_at: Optional[datetime]
+
+
+class PaymentIntentOut(BaseModel):
+    """The fields a client needs to confirm a PaymentIntent with Stripe."""
+
+    payment_id: int
+    amount: int
+    currency: str
+    status: PaymentStatus
+    client_secret: Optional[str] = None
 
 
 # These are the event names this version of RideSplit knows how to send.  A

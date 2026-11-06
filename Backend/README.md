@@ -21,6 +21,13 @@ ACCESS_TOKEN_EXPIRE_MINUTES=30
 WEBHOOK_TIMEOUT_SECONDS=5
 WEBHOOK_MAX_ATTEMPTS=5
 WEBHOOK_RETRY_BASE_SECONDS=30
+# Stripe test credentials for the payment endpoints.
+STRIPE_SECRET_KEY=sk_test_replace_me
+STRIPE_WEBHOOK_SECRET=whsec_replace_me
+# Fare amounts are in cents; the server calculates the final fare from distance.
+PAYMENT_CURRENCY=usd
+RIDE_BASE_FARE_CENTS=500
+RIDE_PER_KM_CENTS=150
 ```
 
 Never commit `.env`; it contains credentials.
@@ -52,6 +59,10 @@ Open `http://127.0.0.1:8000/docs` to use the interactive API documentation.
 - `POST /webhooks`, `GET /webhooks`, `DELETE /webhooks/{id}` — create, view,
   and disable outbound webhook subscriptions.
 - `GET /webhooks/{id}/deliveries` — view recent delivery attempts.
+- `POST /payment/{ride_id}` — create or retrieve the logged-in passenger's
+  Stripe PaymentIntent for a completed ride.
+- `POST /payment/webhook` — Stripe webhook receiver that verifies event
+  signatures and synchronizes payment status.
 
 ## Webhooks, step by step
 

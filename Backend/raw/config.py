@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     redis_url: str = ""
+    # Kept small so an unavailable webhook receiver cannot tie up API workers.
+    webhook_timeout_seconds: float = 5.0
+    webhook_max_attempts: int = 5
+    webhook_retry_base_seconds: int = 30
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -17,4 +21,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-

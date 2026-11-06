@@ -4,6 +4,7 @@ from geoalchemy2 import Geography
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Enum,
@@ -57,6 +58,18 @@ class DeliveryStatus(str, enum.Enum):
     failed = "FAILED"
 
 
+class PaymentStatus(str, enum.Enum):
+    """Our local view of a Stripe PaymentIntent's lifecycle."""
+
+    pending = "PENDING"
+    requires_action = "REQUIRES_ACTION"
+    processing = "PROCESSING"
+    succeeded = "SUCCEEDED"
+    failed = "FAILED"
+    cancelled = "CANCELLED"
+    refunded = "REFUNDED"
+
+
 def pg_enum(enum_cls, name):
     """Store the VALUES ("DRIVER") in Postgres instead of the member names
     ("driver"), so raw SQL like status = 'ACCEPTED' matches what is stored."""
@@ -77,6 +90,7 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     driver_profile = relationship("DriverProfile", back_populates="user", uselist=False)
+    payments = relationship("Payment", back_populates="passenger")
 
 
 class DriverProfile(Base):
@@ -137,6 +151,7 @@ class RideRequest(Base):
     # two FKs point at users, so each relationship must say which one it uses
     passenger = relationship("User", foreign_keys=[passenger_id])
     driver = relationship("User", foreign_keys=[driver_id])
+    payment = relationship("Payment", back_populates="ride_request", uselist=False)
 
     __mapper_args__ = {"version_id_col": version}
     __table_args__ = (
@@ -152,6 +167,50 @@ class RideRequest(Base):
             unique=True,
             postgresql_where=text("status IN ('ACCEPTED', 'IN_PROGRESS')"),
         ),
+    )
+
+
+class Payment(Base):
+    """A local payment record backed by a Stripe PaymentIntent.
+
+    Stripe remains the source of truth for payment state.  These fields let
+    us reconcile webhook events safely and show a payment's status without
+    storing card numbers or other sensitive payment details.
+    """
+
+    __tablename__ = "payments"
+
+    id = Column(Integer, primary_key=True)
+    ride_request_id = Column(
+        Integer,
+        ForeignKey("ride_requests.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    passenger_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    amount = Column(Integer, nullable=False)  # smallest currency unit (e.g. cents)
+    currency = Column(String(3), nullable=False, default="usd")
+    status = Column(
+        pg_enum(PaymentStatus, "payment_status"),
+        nullable=False,
+        default=PaymentStatus.pending,
+        index=True,
+    )
+    stripe_payment_intent_id = Column(String(255), nullable=True, unique=True, index=True)
+    stripe_charge_id = Column(String(255), nullable=True, unique=True)
+    failure_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+    refunded_at = Column(DateTime(timezone=True), nullable=True)
+
+    ride_request = relationship("RideRequest", back_populates="payment")
+    passenger = relationship("User", back_populates="payments")
+
+    __table_args__ = (
+        CheckConstraint("amount >= 0", name="ck_payments_amount_non_negative"),
+        CheckConstraint("char_length(currency) = 3", name="ck_payments_currency_length"),
     )
 
 

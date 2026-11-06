@@ -219,3 +219,160 @@ def accept_ride_request(
         ) from exc
 
     return serialize_ride_request(ride_request)
+
+
+@router.post("/{request_id}/start", response_model=schemas.RideRequestOut)
+def start_trip(
+    request_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(oauth.get_current_driver),
+):
+    """Move the authenticated driver's accepted ride into progress."""
+    ride_request = (
+        db.query(models.RideRequest)
+        .filter(models.RideRequest.id == request_id)
+        .with_for_update()
+        .first()
+    )
+
+    # Use ``or`` here: it short-circuits, so driver_id is never read when
+    # there is no matching row.  ``|`` is a bitwise operator, not boolean OR.
+    if ride_request is None or ride_request.driver_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ride request not found",
+        )
+    if ride_request.status != models.RequestStatus.accepted:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only an accepted ride can be started",
+        )
+
+    ride_request.status = models.RequestStatus.in_progress
+    try:
+        db.commit()
+        db.refresh(ride_request)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to start the ride",
+        ) from exc
+
+    return serialize_ride_request(ride_request)
+
+
+@router.post("/{request_id}/complete", response_model=schemas.RideRequestOut)
+def complete_trip(
+    request_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(oauth.get_current_driver),
+):
+    """Complete an in-progress ride and make its driver available again."""
+    ride_request = (
+        db.query(models.RideRequest)
+        .filter(models.RideRequest.id == request_id)
+        .with_for_update()
+        .first()
+    )
+    if ride_request is None or ride_request.driver_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ride request not found",
+        )
+    if ride_request.status != models.RequestStatus.in_progress:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only an in-progress ride can be completed",
+        )
+
+    # Lock the driver's profile too, because this transaction changes both
+    # the ride and the driver's availability.
+    profile = (
+        db.query(models.DriverProfile)
+        .filter(models.DriverProfile.user_id == current_user.id)
+        .with_for_update()
+        .first()
+    )
+    if profile is None:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="A driver profile is required",
+        )
+
+    ride_request.status = models.RequestStatus.completed
+    ride_request.completed_at = datetime.now(timezone.utc)
+    profile.status = models.DriverStatus.available
+    try:
+        db.commit()
+        db.refresh(ride_request)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to complete the ride",
+        ) from exc
+
+    return serialize_ride_request(ride_request)
+
+
+@router.post("/{request_id}/cancel", response_model=schemas.RideRequestOut)
+def cancel_ride_request(
+    request_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(oauth.get_current_user),
+):
+    """Let the owning passenger cancel a pending or accepted ride."""
+    ride_request = (
+        db.query(models.RideRequest)
+        .filter(models.RideRequest.id == request_id)
+        .with_for_update()
+        .first()
+    )
+    if ride_request is None or ride_request.passenger_id != current_user.id:
+        # A 404 does not reveal another passenger's ride IDs.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ride request not found",
+        )
+    if ride_request.status not in (
+        models.RequestStatus.pending,
+        models.RequestStatus.accepted,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only a pending or accepted ride can be cancelled",
+        )
+
+    # An accepted ride made its driver busy. Lock and release that profile in
+    # the same transaction so the driver can accept another ride afterwards.
+    profile = None
+    if ride_request.driver_id is not None:
+        profile = (
+            db.query(models.DriverProfile)
+            .filter(models.DriverProfile.user_id == ride_request.driver_id)
+            .with_for_update()
+            .first()
+        )
+        if profile is None:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Assigned driver profile no longer exists",
+            )
+
+    ride_request.status = models.RequestStatus.cancelled
+    if profile is not None:
+        profile.status = models.DriverStatus.available
+    try:
+        db.commit()
+        db.refresh(ride_request)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to cancel the ride request",
+        ) from exc
+
+    return serialize_ride_request(ride_request)
